@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import os
 import re
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -242,30 +245,25 @@ async def build_dataframes(
     }
 
 
+def load_symbols(file: str) -> list[str]:
+    out: list[list] = []
+    with open(file, newline="") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            out.append(row["Symbol"])
+    return out
+
+
 if __name__ == "__main__":
-    symbols = [
-        "ACMIB",
-        "ACMIO",
-        "ACAM",
-        "ACPA",
-        "ACRA7",
-        "ACRAR",
-        "ACRU2",
-        "ADBI",
-        "ADAL",
-        "ADPE",
-        "ADFU",
-        "AEMA2",
-        "AEGL",
-    ]
+    symbols = load_symbols("input.csv")
 
     dfs = asyncio.run(build_dataframes(symbols, concurrency=8))
 
-    dfs["plants_df"].to_csv("plants.csv", index=False)
-    dfs["native_status_df"].to_csv("native_status.csv", index=False)
-    dfs["ancestors_df"].to_csv("ancestors.csv", index=False)
+    dfs["plants_df"].to_csv("data/plants.csv", index=False)
+    dfs["native_status_df"].to_csv("data/native_status.csv", index=False)
+    dfs["ancestors_df"].to_csv("data/ancestors.csv", index=False)
     # Only non-empty characteristics will have columns
-    dfs["characteristics_df"].to_csv("characteristics.csv", index=False)
+    dfs["characteristics_df"].to_csv("data/characteristics.csv", index=False)
 
     # Quick peek
     print("plants_df\n", dfs["plants_df"].head())
