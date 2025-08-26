@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import csv
 import os
+import random
 import re
 from collections.abc import Iterable
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,6 +14,30 @@ from tqdm import tqdm
 
 PLANT_PROFILE_URL = "https://plantsservices.sc.egov.usda.gov/api/PlantProfile"
 PLANT_CHAR_URL = "https://plantsservices.sc.egov.usda.gov/api/PlantCharacteristics"
+
+
+PLANT_KEYS = [
+    "Id",
+    "Symbol",
+    "ScientificName",
+    "CommonName",
+    "Group",
+    "RankId",
+    "Rank",
+    "HasCharacteristics",
+    "HasDistributionData",
+    "HasImages",
+    "HasRelatedLinks",
+    "NumImages",
+    "ProfileImageFilename",
+    "PlantNotes",
+    "Durations",
+    "GrowthHabits",
+    "HasLegalStatuses",
+    "LegalStatuses",
+    "HasNoxiousStatuses",
+    "NoxiousStatuses",
+]
 
 TAG_RE = re.compile(r"<.*?>")
 
@@ -30,21 +54,21 @@ async def fetch_json(
 ) -> Any | None:
     delay = 0.5
 
-    for attempt in range(max_retries):
+    for _ in range(max_retries):
         try:
-            r = await client.get(url, params=params, timeout=30)
+            r = await client.get(url, params=params)
             if r.status_code == 200:
                 return r.json()
 
             if r.status_code in (429, 500, 502, 503, 504):
-                await asyncio.sleep(delay)
+                await asyncio.sleep(delay + random.uniform(0, 0.2))
                 delay *= 2
                 continue
 
             return None
 
         except httpx.RequestError:
-            await asyncio.sleep(delay)
+            await asyncio.sleep(delay + random.uniform(0, 0.2))
             delay *= 2
 
     return None
@@ -69,71 +93,41 @@ def normalize_record_to_rows(record: dict) -> tuple[dict, list[dict], list[dict]
         native_rows: list[dict] (zero or more)
         acnester_rows: list[dict] (zero or more)
     """
-    plant_row = {
-        "Id": record.get("Id"),
-        "Symbol": record.get("Symbol"),
-        "ScientificName": strip_html(record.get("ScientificName")),
-        "CommonName": record.get("CommonName"),
-        "Group": record.get("Group"),
-        "RankId": record.get("RankId"),
-        "Rank": record.get("Rank"),
-        "HasCharacteristics": record.get("HasCharacteristics"),
-        "HasDistributionData": record.get("HasDistributionData"),
-        "HasImages": record.get("HasImages"),
-        "HasRelatedLinks": record.get("HasRelatedLinks"),
-        "NumImages": record.get("NumImages"),
-        "ProfileImageFilename": record.get("ProfileImageFilename"),
-        "PlantNotes": record.get("PlantNotes"),
-        "Durations": record.get("Durations"),
-        "GrowthHabits": record.get("GrowthHabits"),
-        "HasLegalStatuses": record.get("HasLegalStatuses"),
-        "LegalStatuses": record.get("LegalStatuses"),
-        "HasNoxiousStatuses": record.get("HasNoxiousStatuses"),
-        "NoxiousStatuses": record.get("NoxiousStatuses"),
-    }
+    plant_row = {k: record.get(k) for k in PLANT_KEYS}
+    plant_row["ScientificName"] = strip_html(plant_row["ScientificName"])
 
-    native_rows = []
-    for ns in record.get("NativeStatuses") or []:
-        native_rows.append(
-            {
-                "PlantID": record.get("Id"),
-                "Region": ns.get("Region"),
-                "Status": ns.get("Status"),
-                "Type": ns.get("Type"),
-            }
-        )
+    native_rows = [
+        {"PlantID": record.get("Id"), **ns} for ns in record.get("NativeStatuses", [])
+    ]
 
-    ancestor_rows = []
-    for anc in record.get("Ancestors") or []:
-        ancestor_rows.append(
-            {
-                "PlantID": record.get("Id"),
-                "AncestorId": anc.get("Id"),
-                "Symbol": anc.get("Symbol"),
-                "ScientificName": strip_html(anc.get("ScientificName")),
-                "CommonName": anc.get("CommonName"),
-                "RankId": anc.get("RankId"),
-                "Rank": anc.get("Rank"),
-            }
-        )
+    ancestor_rows = [
+        {
+            "PlantID": record.get("Id"),
+            "Id": anc.get("Id"),
+            "Symbol": anc.get("Symbol"),
+            "ScientificName": strip_html(anc.get("ScientificName")),
+            "CommonName": anc.get("CommonName"),
+            "RankId": anc.get("RankId"),
+            "Rank": anc.get("Rank"),
+        }
+        for anc in record.get("Ancestors", [])
+    ]
 
     return plant_row, native_rows, ancestor_rows
 
 
 def normalize_characteristics_to_row(plant_id: int, items: list[dict]) -> list[dict]:
-    rows = []
-    for char in items or []:
-        rows.append(
-            {
-                "PlantID": plant_id,
-                "PlantCharacteristicName": char.get("PlantCharacteristicName"),
-                "PlantCharacteristicValue": char.get("PlantCharacteristicValue"),
-                "PlantCharacteristicCategory": char.get("PlantCharacteristicCategory"),
-                "CultivarName": char.get("CultivarName"),
-                "SynonymName": char.get("SynonymName"),
-            }
-        )
-    return rows
+    return [
+        {
+            "PlantID": plant_id,
+            "PlantCharacteristicName": char.get("PlantCharacteristicName"),
+            "PlantCharacteristicValue": char.get("PlantCharacteristicValue"),
+            "PlantCharacteristicCategory": char.get("PlantCharacteristicCategory"),
+            "CultivarName": char.get("CultivarName"),
+            "SynonymName": char.get("SynonymName"),
+        }
+        for char in (items or [])
+    ]
 
 
 async def build_dataframes(
@@ -147,7 +141,9 @@ async def build_dataframes(
     async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
         sem = asyncio.Semaphore(concurrency)
 
-        async def process_symbol(symbol: str) -> dict[str, pd.DataFrame]:
+        async def process_symbol(
+            symbol: str,
+        ) -> tuple[dict, list[dict], list[dict], list[dict]] | None:
             async with sem:
                 profile = await fetch_profile(client, symbol)
             if not profile:
@@ -246,7 +242,7 @@ async def build_dataframes(
 
 
 def load_symbols(file: str) -> list[str]:
-    out: list[list] = []
+    out: list[str] = []
     with open(file, newline="") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
@@ -258,6 +254,8 @@ if __name__ == "__main__":
     symbols = load_symbols("input.csv")
 
     dfs = asyncio.run(build_dataframes(symbols, concurrency=8))
+
+    os.makedirs("data", exist_ok=True)
 
     dfs["plants_df"].to_csv("data/plants.csv", index=False)
     dfs["native_status_df"].to_csv("data/native_status.csv", index=False)
