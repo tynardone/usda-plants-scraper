@@ -5,7 +5,7 @@ import csv
 import os
 import random
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -86,6 +86,36 @@ async def fetch_characteristics(
     return data if isinstance(data, list) else None
 
 
+def _sequence_to_str(s: Sequence) -> str:
+    return ",".join(str(i) for i in s if i is not None)
+
+
+def plant_row_from_record(
+    record: dict,
+    strip_html_fields: set[str] = {"ScientificName"},
+    exclude_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {}
+
+    for k, v in record.items():
+        if exclude_keys and k in exclude_keys:
+            continue
+
+        if isinstance(v, Mapping):
+            continue
+
+        if isinstance(v, Sequence):
+            v_str = _sequence_to_str(v)
+            row[k] = v_str
+
+        if isinstance(v, str) and k in strip_html_fields:
+            row[k] = strip_html(v)
+        else:
+            row[k] = v
+    print(row)
+    return row
+
+
 def normalize_record_to_rows(record: dict) -> tuple[dict, list[dict], list[dict]]:
     """
     Returns:
@@ -93,8 +123,7 @@ def normalize_record_to_rows(record: dict) -> tuple[dict, list[dict], list[dict]
         native_rows: list[dict] (zero or more)
         acnester_rows: list[dict] (zero or more)
     """
-    plant_row = {k: record.get(k) for k in PLANT_KEYS}
-    plant_row["ScientificName"] = strip_html(plant_row["ScientificName"])
+    plant_row = plant_row_from_record(record)
 
     native_rows = [
         {"PlantID": record.get("Id"), **ns} for ns in record.get("NativeStatuses", [])
@@ -253,6 +282,14 @@ def load_symbols(file: str) -> list[str]:
 if __name__ == "__main__":
     symbols = load_symbols("input.csv")
 
+    symbols = [
+        "AGNE2",
+        "AGSC",
+        "AGAL5",
+        "AGGL",
+        "AGGR2",
+        "AGPA6",
+    ]
     dfs = asyncio.run(build_dataframes(symbols, concurrency=8))
 
     os.makedirs("data", exist_ok=True)
