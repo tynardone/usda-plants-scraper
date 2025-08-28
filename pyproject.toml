@@ -1,7 +1,36 @@
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[project]
+name = "usda-plants-scraper"
+version = "0.1.0"
+description = "Asynchronous scraper and data pipeline for USDA PLANTS DATABASE"
+authors = [{ name = "Tyler Nardone", email = "tynardone@gmail.com" }]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx (>=0.28.1,<0.29.0)",
+    "pandas (>=2.3.2,<3.0.0)",
+    "tqdm (>=4.67.1,<5.0.0)",
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+ruff = "^0.12.11"
+mypy = "^1.17.1"
+pytest-asyncio = "^1.1.0"
+pre-commit = "^4.3.0"
+
+
 [tool.ruff.lint]
 extend-select = ["E", "C90", "C901", "I", "PD", "N", "B"]
 ignore = ["PD901"]
 
 [tool.ruff.lint.mccabe]
-# Flag errors (`C901`) whenever the complexity level exceeds 5.
 max-complexity = 8
