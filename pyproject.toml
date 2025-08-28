@@ -1,0 +1,7 @@
+[tool.ruff.lint]
+extend-select = ["E", "C90", "C901", "I", "PD", "N", "B"]
+ignore = ["PD901"]
+
+[tool.ruff.lint.mccabe]
+# Flag errors (`C901`) whenever the complexity level exceeds 5.
+max-complexity = 8

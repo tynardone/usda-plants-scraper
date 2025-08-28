@@ -43,6 +43,21 @@ def strip_html(s: str | None) -> str | None:
     return TAG_RE.sub("", s) if isinstance(s, str) else s
 
 
+def create_dataframe(
+    rows: list[dict], fallback_columns: list[str] | None = None
+) -> pd.DataFrame:
+    """
+    Return pandas DataFrame from a list of records. If list empty
+    return an empty DataFrame with fallback_columns
+    """
+
+    if rows:
+        df = pd.DataFrame(rows)
+    else:
+        df = pd.DataFrame(columns=fallback_columns)
+    return df
+
+
 async def fetch_json(
     client: httpx.AsyncClient,
     url: str,
@@ -53,21 +68,39 @@ async def fetch_json(
 
     for _ in range(max_retries):
         try:
-            r = await client.get(url, params=params)
+            r = await client.get(
+                url,
+                params=params,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 "
+                    "Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/139.0.0.0 Mobile Safari/537.36"
+                },
+            )
             if r.status_code == 200:
                 return r.json()
 
-            if r.status_code in (429, 500, 502, 503, 504):
+            if r.status_code == 429:  # rate limit
+                retry_after = r.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    await asyncio.sleep(int(retry_after))
+                else:
+                    await asyncio.sleep(delay + random.uniform(0, 0.2))
+                    delay *= 2
+                continue
+
+            if r.status_code in (500, 502, 503, 504):
                 await asyncio.sleep(delay + random.uniform(0, 0.2))
                 delay *= 2
                 continue
-
-            return None
-
-        except httpx.RequestError:
+        except (
+            httpx.RequestError,
+            httpx.TimeoutError,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+        ):
             await asyncio.sleep(delay + random.uniform(0, 0.2))
             delay *= 2
-
     return None
 
 
@@ -75,20 +108,12 @@ async def fetch_profile(client: httpx.AsyncClient, symbol: str) -> dict | None:
     return await fetch_json(client, PLANT_PROFILE_URL, params={"symbol": symbol})
 
 
-async def fetch_characteristics(
-    client: httpx.AsyncClient, plant_id: int
-) -> list | None:
-    url = f"{PLANT_CHAR_URL}/{plant_id}"
-    data = await fetch_json(client, url)
-    return data if isinstance(data, list) else None
-
-
 def normalize_record_to_rows(record: dict) -> tuple[dict, list[dict], list[dict]]:
     """
     Returns:
         plant_row: dict (one row)
         native_rows: list[dict] (zero or more)
-        acnester_rows: list[dict] (zero or more)
+        ancestor_rows: list[dict] (zero or more)
     """
     plant_row = {k: record.get(k) for k in PLANT_KEYS}
     plant_row["ScientificName"] = strip_html(plant_row["ScientificName"])
@@ -100,7 +125,7 @@ def normalize_record_to_rows(record: dict) -> tuple[dict, list[dict], list[dict]
     ancestor_rows = [
         {
             "PlantID": record.get("Id"),
-            "Id": anc.get("Id"),
+            "AncestorID": anc.get("Id"),
             "Symbol": anc.get("Symbol"),
             "ScientificName": strip_html(anc.get("ScientificName")),
             "CommonName": anc.get("CommonName"),
@@ -127,6 +152,20 @@ def normalize_characteristics_to_row(plant_id: int, items: list[dict]) -> list[d
     ]
 
 
+async def fetch_characteristics(
+    client: httpx.AsyncClient, profile: dict, semaphore: asyncio.Semaphore
+) -> list[dict]:
+    char_rows: list[dict] = []
+    if profile.get("HasCharacteristics"):
+        plant_id = profile["Id"]
+        url = f"{PLANT_CHAR_URL}/{plant_id}"
+        async with semaphore:
+            data = await fetch_json(client, url)
+            if isinstance(data, list):
+                char_rows = normalize_characteristics_to_row(plant_id, data)
+    return char_rows
+
+
 async def build_dataframes(
     symbols: Iterable[str], concurrency: int = 10
 ) -> dict[str, pd.DataFrame]:
@@ -148,16 +187,7 @@ async def build_dataframes(
 
             plant_row, native_rows, ancestor_rows = normalize_record_to_rows(profile)
 
-            char_rows: list[dict] = []
-
-            if profile.get("HasCharacteristics") and profile.get("Id") is not None:
-                async with sem:
-                    chars = await fetch_characteristics(client, int(profile["Id"]))
-
-                if chars:
-                    char_rows = normalize_characteristics_to_row(
-                        int(profile["Id"]), chars
-                    )
+            char_rows = await fetch_characteristics(client, profile, semaphore=sem)
 
             return plant_row, native_rows, ancestor_rows, char_rows
 
@@ -194,42 +224,36 @@ async def build_dataframes(
     plants_df = (
         pd.DataFrame(plant_rows).drop_duplicates(subset=["Id"]).reset_index(drop=True)
     )
-    native_status_df = (
-        pd.DataFrame(native_rows)
-        if native_rows
-        else pd.DataFrame(columns=["PlantID", "Region", "Status", "Type"])
+
+    native_status_df = create_dataframe(
+        native_rows, fallback_columns=["PlantID", "Region", "Status", "Type"]
     )
 
-    ancestors_df = (
-        pd.DataFrame(ancestor_rows)
-        if ancestor_rows
-        else pd.DataFrame(
-            columns=[
-                "PlantID",
-                "AncestorId",
-                "Symbol",
-                "ScientificName",
-                "CommonName",
-                "RankId",
-                "Rank",
-            ]
-        )
+    ancestors_df = create_dataframe(
+        ancestor_rows,
+        fallback_columns=[
+            "PlantID",
+            "AncestorID",
+            "Symbol",
+            "ScientificName",
+            "CommonName",
+            "RankId",
+            "Rank",
+        ],
     )
 
-    characteristics_df = (
-        pd.DataFrame(char_rows)
-        if char_rows
-        else pd.DataFrame(
-            columns=[
-                "PlantID",
-                "PlantCharacteristicName",
-                "PlantCharacteristicValue",
-                "PlantCharacteristicCategory",
-                "CultivarName",
-                "SynonymName",
-            ]
-        )
+    characteristics_df = create_dataframe(
+        char_rows,
+        fallback_columns=[
+            "PlantID",
+            "PlantCharacteristicName",
+            "PlantCharacteristicValue",
+            "PlantCharacteristicCategory",
+            "CultivarName",
+            "SynonymName",
+        ],
     )
+
     return {
         "plants_df": plants_df,
         "native_status_df": native_status_df,
@@ -243,21 +267,15 @@ def load_symbols(file: str) -> list[str]:
     with open(file, newline="") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            out.append(row["Symbol"])
-    return out
+            sym = (row.get("Symbol") or "").strip().upper()
+            if sym:
+                out.append(sym)
+    return list(dict.fromkeys(out))  # dedupes
 
 
 if __name__ == "__main__":
     symbols = load_symbols("input.csv")
 
-    symbols = [
-        "AGNE2",
-        "AGSC",
-        "AGAL5",
-        "AGGL",
-        "AGGR2",
-        "AGPA6",
-    ]
     dfs = asyncio.run(build_dataframes(symbols, concurrency=8))
 
     os.makedirs("data", exist_ok=True)
