@@ -36,6 +36,12 @@ PLANT_KEYS = [
     "NoxiousStatuses",
 ]
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 "
+    "Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/139.0.0.0 Mobile Safari/537.36"
+}
+
 TAG_RE = re.compile(r"<.*?>")
 
 
@@ -71,25 +77,22 @@ async def fetch_json(
             r = await client.get(
                 url,
                 params=params,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 "
-                    "Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/139.0.0.0 Mobile Safari/537.36"
-                },
+                headers=HEADERS,
             )
-            if r.status_code == 200:
+            status_code = r.status_code
+            if status_code == 200:
                 return r.json()
 
-            if r.status_code == 429:  # rate limit
-                retry_after = r.headers.get("Retry-After")
-                if retry_after and retry_after.isdigit():
-                    await asyncio.sleep(int(retry_after))
-                else:
-                    await asyncio.sleep(delay + random.uniform(0, 0.2))
-                    delay *= 2
+            if status_code == 429:  # rate limit
+                ra = r.headers.get("Retry-After")
+                sleep_time = (
+                    int(ra) if ra and ra.isdigit() else delay + random.uniform(0, 0.2)
+                )
+                await asyncio.sleep(sleep_time)
+                delay *= 2
                 continue
 
-            if r.status_code in (500, 502, 503, 504):
+            if status_code in (500, 502, 503, 504):
                 await asyncio.sleep(delay + random.uniform(0, 0.2))
                 delay *= 2
                 continue
@@ -116,7 +119,7 @@ def normalize_record_to_rows(record: dict) -> tuple[dict, list[dict], list[dict]
         ancestor_rows: list[dict] (zero or more)
     """
     plant_row = {k: record.get(k) for k in PLANT_KEYS}
-    plant_row["ScientificName"] = strip_html(plant_row["ScientificName"])
+    plant_row["ScientificName"] = strip_html(plant_row.get("ScientificName"))
 
     native_rows = [
         {"PlantID": record.get("Id"), **ns} for ns in record.get("NativeStatuses", [])
