@@ -68,6 +68,12 @@ data/
 
 ## Notes
 
+## TODO
+
+- Create attrs models for data rows
+
+- Split apart sync and async code
+
 ## License
 
 MIT License see [LICENSE](LICENSE) for details.
